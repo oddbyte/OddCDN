@@ -6,6 +6,9 @@ const zlib = require('zlib');
 const crypto = require('crypto');
 const os = require('os');
 const cluster = require('cluster');
+const readline = require('readline');
+const winston = require('winston');
+require('winston-daily-rotate-file');
 
 /*
     Author: Oddbyte
@@ -32,6 +35,35 @@ const MAX_CACHE_SIZE = 1 * 1024 * 1024 * 1024;
     Description: The current size of the cache.
 */
 let cacheSize = 0;
+
+/*
+    Author: Oddbyte
+    Description: Log directory and logger setup.
+*/
+const logDir = './log';
+if (!fs.existsSync(logDir)) {
+    fs.mkdirSync(logDir);
+}
+
+const dailyRotateFileTransport = new winston.transports.DailyRotateFile({
+    filename: `${logDir}/%DATE%.log`,
+    datePattern: 'YYYY-MM-DD',
+    zippedArchive: true,
+    maxSize: '20m',
+    maxFiles: '14d'
+});
+
+const logger = winston.createLogger({
+    level: 'info',
+    format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.json()
+    ),
+    transports: [
+        new winston.transports.Console(),
+        dailyRotateFileTransport
+    ]
+});
 
 /*
     Author: Oddbyte
@@ -123,7 +155,13 @@ const sendError = (res, statusCode, message) => {
 */
 const logRequest = (req, statusCode) => {
     const now = new Date();
-    console.log(`[${now.toISOString()}] "${req.method} ${req.url}" ${statusCode}`);
+    const logEntry = {
+        timestamp: now.toISOString(),
+        method: req.method,
+        url: req.url,
+        statusCode
+    };
+    logger.info(logEntry);
 };
 
 /*
@@ -288,6 +326,66 @@ if (cluster.isMaster) {
         console.log(`Worker ${worker.process.pid} died. Forking a new worker...`);
         cluster.fork();
     });
+
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+        prompt: `server> `
+    });
+
+    const commands = {
+        'stop': () => {
+            console.log(`Stopping the server...`);
+            for (const id in cluster.workers) {
+                cluster.workers[id].kill();
+            }
+            rl.close();
+        },
+        'verbose on': () => {
+            verboseLogging = true;
+            console.log(`Verbose mode enabled.`);
+        },
+        'verbose off': () => {
+            verboseLogging = false;
+            console.log(`Verbose mode disabled.`);
+        },
+        'cache clear': () => {
+            CACHE.clear();
+            cacheSize = 0;
+            console.log(`Cache cleared.`);
+        },
+        'cache list': () => {
+            console.log(`Cached items:`);
+            for (const [key, value] of CACHE) {
+                console.log(key);
+            }
+        },
+        'help': () => {
+            console.log(`Available commands:`);
+            for (const cmd in commands) {
+                console.log(`  ${cmd}`);
+            }
+        },
+        'default': (line) => {
+            console.log(`Unknown command: "${line.trim()}"`);
+        }
+    };
+
+    rl.prompt();
+
+    rl.on(`line`, (line) => {
+        const command = line.trim();
+        if (commands[command]) {
+            commands[command]();
+        } else {
+            commands['default'](line);
+        }
+        rl.prompt();
+    }).on(`close`, () => {
+        console.log(`Closing the readline interface...`);
+        process.exit(0);
+    });
+
 } else {
     /*
         Author: Oddbyte
