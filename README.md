@@ -1,6 +1,6 @@
 # OddCDN
 
-A fast, reliable content delivery platform.
+A fast, reliable content delivery platform, with Multi-thread and multi-core support, caching, compression, and more!
 
 
 ## Installation:
