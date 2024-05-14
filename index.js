@@ -6,7 +6,6 @@ const zlib = require('zlib');
 const crypto = require('crypto');
 const os = require('os');
 const cluster = require('cluster');
-const readline = require('readline');
 const winston = require('winston');
 require('winston-daily-rotate-file');
 
@@ -35,6 +34,11 @@ const MAX_CACHE_SIZE = 1 * 1024 * 1024 * 1024;
     Description: The current size of the cache.
 */
 let cacheSize = 0;
+/*
+    Author: Oddbyte
+    Description: The maximum log directory size in bytes (5GB).
+*/
+const MAX_LOG_DIR_SIZE = 5 * 1024 * 1024 * 1024;
 
 /*
     Author: Oddbyte
@@ -49,8 +53,8 @@ const dailyRotateFileTransport = new winston.transports.DailyRotateFile({
     filename: `${logDir}/%DATE%.log`,
     datePattern: 'YYYY-MM-DD',
     zippedArchive: true,
-    maxSize: '20m',
-    maxFiles: '14d'
+    maxSize: '250m',  // 250 MB
+    maxFiles: '365d'  // Keep logs for 1 year
 });
 
 const logger = winston.createLogger({
@@ -64,6 +68,54 @@ const logger = winston.createLogger({
         dailyRotateFileTransport
     ]
 });
+
+/*
+    Author: Oddbyte
+    Description: Function to get the size of a directory.
+    Params:
+        directory - The directory path.
+    Returns: The size of the directory in bytes.
+*/
+const getDirectorySize = (directory) => {
+    const files = fs.readdirSync(directory);
+    let totalSize = 0;
+
+    files.forEach(file => {
+        const filePath = path.join(directory, file);
+        const stats = fs.statSync(filePath);
+        if (stats.isFile()) {
+            totalSize += stats.size;
+        }
+    });
+
+    return totalSize;
+};
+
+/*
+    Author: Oddbyte
+    Description: Function to enforce log directory size limit.
+*/
+const enforceLogSizeLimit = () => {
+    let totalSize = getDirectorySize(logDir);
+    if (totalSize <= MAX_LOG_DIR_SIZE) {
+        return;
+    }
+
+    const files = fs.readdirSync(logDir)
+        .map(file => ({ file, time: fs.statSync(path.join(logDir, file)).mtime.getTime() }))
+        .sort((a, b) => a.time - b.time);
+
+    for (const { file } of files) {
+        if (totalSize <= MAX_LOG_DIR_SIZE) {
+            break;
+        }
+
+        const filePath = path.join(logDir, file);
+        const stats = fs.statSync(filePath);
+        fs.unlinkSync(filePath);
+        totalSize -= stats.size;
+    }
+};
 
 /*
     Author: Oddbyte
@@ -242,6 +294,10 @@ const handleRequest = (req, res) => {
             return;
         }
 
+        if (fs.existsSync(pathname) && fs.statSync(pathname).isDirectory()) {
+            pathname = path.join(pathname, 'index.html');
+        }
+
         fs.stat(pathname, (err, stats) => {
             if (err) {
                 logRequest(req, 404);
@@ -327,64 +383,71 @@ if (cluster.isMaster) {
         cluster.fork();
     });
 
-    const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout,
-        prompt: `server> `
-    });
+    let shuttingDown = false;
 
-    const commands = {
-        'stop': () => {
-            console.log(`Stopping the server...`);
-            for (const id in cluster.workers) {
-                cluster.workers[id].kill();
-            }
-            rl.close();
-        },
-        'verbose on': () => {
-            verboseLogging = true;
-            console.log(`Verbose mode enabled.`);
-        },
-        'verbose off': () => {
-            verboseLogging = false;
-            console.log(`Verbose mode disabled.`);
-        },
-        'cache clear': () => {
-            CACHE.clear();
-            cacheSize = 0;
-            console.log(`Cache cleared.`);
-        },
-        'cache list': () => {
-            console.log(`Cached items:`);
-            for (const [key, value] of CACHE) {
-                console.log(key);
-            }
-        },
-        'help': () => {
-            console.log(`Available commands:`);
-            for (const cmd in commands) {
-                console.log(`  ${cmd}`);
-            }
-        },
-        'default': (line) => {
-            console.log(`Unknown command: "${line.trim()}"`);
+    const handleInput = (data) => {
+        const input = data.toString().trim();
+        switch (input) {
+            case 'stop':
+                console.log(`Stopping the server...`);
+                shuttingDown = true;
+                for (const id in cluster.workers) {
+                    cluster.workers[id].kill();
+                }
+                process.exit(0);
+                break;
+            case 'verbose on':
+                verboseLogging = true;
+                console.log(`Verbose mode enabled.`);
+                break;
+            case 'verbose off':
+                verboseLogging = false;
+                console.log(`Verbose mode disabled.`);
+                break;
+            case 'cache clear':
+                CACHE.clear();
+                cacheSize = 0;
+                console.log(`Cache cleared.`);
+                break;
+            case 'cache list':
+                console.log(`Cached items:`);
+                for (const [key, value] of CACHE) {
+                    console.log(key);
+                }
+                break;
+            case 'help':
+                console.log(`Available commands:`);
+                console.log(`  stop         - Stop the server`);
+                console.log(`  verbose on   - Enable verbose logging`);
+                console.log(`  verbose off  - Disable verbose logging`);
+                console.log(`  cache clear  - Clear the cache`);
+                console.log(`  cache list   - List cached items`);
+                break;
+            default:
+                console.log(`Unknown command: "${input}"`);
+                break;
         }
     };
 
-    rl.prompt();
+    process.stdin.resume();
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', handleInput);
 
-    rl.on(`line`, (line) => {
-        const command = line.trim();
-        if (commands[command]) {
-            commands[command]();
-        } else {
-            commands['default'](line);
-        }
-        rl.prompt();
-    }).on(`close`, () => {
-        console.log(`Closing the readline interface...`);
+    process.on('SIGTERM', () => {
+        shuttingDown = true;
+        console.log('Graceful shutdown initiated');
         process.exit(0);
     });
+
+    process.on('SIGINT', () => {
+        shuttingDown = true;
+        console.log('Graceful shutdown initiated');
+        process.exit(0);
+    });
+
+    // Enforce log size limit at startup and every 10 minutes
+    enforceLogSizeLimit();
+    setInterval(enforceLogSizeLimit, 10 * 60 * 1000);
 
 } else {
     /*
@@ -397,19 +460,14 @@ if (cluster.isMaster) {
         console.log(`OddCDN worker ${process.pid} running at http://localhost:${PORT}/`);
     });
 
-    process.on('SIGTERM', () => {
+    const gracefulShutdown = () => {
         console.log('Graceful shutdown initiated');
         server.close(() => {
             console.log('Server closed');
             process.exit(0);
         });
-    });
+    };
 
-    process.on('SIGINT', () => {
-        console.log('Graceful shutdown initiated');
-        server.close(() => {
-            console.log('Server closed');
-            process.exit(0);
-        });
-    });
+    process.on('SIGTERM', gracefulShutdown);
+    process.on('SIGINT', gracefulShutdown);
 }
