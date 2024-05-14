@@ -12,4 +12,4 @@ Run `npm init`
 
 Download the index.js to the cdn folder
 
-Run it with `npm start`
+Start it with `node .`
