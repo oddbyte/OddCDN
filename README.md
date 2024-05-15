@@ -4,14 +4,11 @@ A fast, reliable content delivery platform, with Multi-thread and multi-core sup
 
 
 ## Installation:
-Make a folder with `mkdir cdn`
+Make the folder with `git clone https://github.com/OddbyteWasTaken/OddCDN.git`
 
-Go into the folder with `cd cdn`
+Go into the folder with `cd OddCDN`
 
 Run `npm init`
-Run `npm i winston`
-Run `npm i winston-daily-rotate-file`
+Run `npm i`
 
-Download the index.js to the cdn folder
-
-Start it with `node .`
+Start it with `node .` or `npm start`
